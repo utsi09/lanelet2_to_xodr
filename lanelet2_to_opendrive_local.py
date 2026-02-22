@@ -1,24 +1,15 @@
-#!/usr/bin/env python3
-"""
-Convert Lanelet2 OSM map to OpenDRIVE using local coordinates
-"""
-
 import xml.etree.ElementTree as ET
 import numpy as np
 from math import sqrt, atan2
 import sys
 
 def parse_lanelet2_local(osm_file):
-    """Parse Lanelet2 OSM file using local_x and local_y tags"""
     tree = ET.parse(osm_file)
     root = tree.getroot()
     
-    # Extract nodes with local coordinates
     nodes = {}
     for node in root.findall('node'):
         node_id = node.get('id')
-        
-        # Get local coordinates from tags
         local_x = None
         local_y = None
         for tag in node.findall('tag'):
@@ -30,13 +21,10 @@ def parse_lanelet2_local(osm_file):
         if local_x is not None and local_y is not None:
             nodes[node_id] = {'x': local_x, 'y': local_y}
     
-    # Extract ways (lanelets)
     ways = {}
     for way in root.findall('way'):
         way_id = way.get('id')
         node_refs = [nd.get('ref') for nd in way.findall('nd')]
-        
-        # Get tags
         tags = {}
         for tag in way.findall('tag'):
             tags[tag.get('k')] = tag.get('v')
@@ -46,7 +34,6 @@ def parse_lanelet2_local(osm_file):
             'tags': tags
         }
     
-    # Extract relations (lanelet relationships)
     relations = []
     for relation in root.findall('relation'):
         rel_type = None
@@ -63,7 +50,6 @@ def parse_lanelet2_local(osm_file):
                     'role': member.get('role')
                 })
             
-            # Get relation tags
             tags = {}
             for tag in relation.findall('tag'):
                 tags[tag.get('k')] = tag.get('v')
@@ -76,7 +62,6 @@ def parse_lanelet2_local(osm_file):
     return nodes, ways, relations
 
 def calculate_geometry(points):
-    """Calculate line segments for geometry"""
     geometries = []
     s_offset = 0.0
     
@@ -88,7 +73,7 @@ def calculate_geometry(points):
         dy = y2 - y1
         length = sqrt(dx*dx + dy*dy)
         
-        if length > 0.01:  # Skip very short segments
+        if length > 0.01:
             heading = atan2(dy, dx)
             geometries.append({
                 's': s_offset,
@@ -102,12 +87,8 @@ def calculate_geometry(points):
     return geometries, s_offset
 
 def create_opendrive_local(nodes, ways, relations, output_file):
-    """Create OpenDRIVE XML file from local coordinates"""
-    
-    # Create OpenDRIVE root
     opendrive = ET.Element('OpenDRIVE')
     
-    # Add header
     header = ET.SubElement(opendrive, 'header')
     header.set('revMajor', '1')
     header.set('revMinor', '4')
@@ -119,12 +100,10 @@ def create_opendrive_local(nodes, ways, relations, output_file):
     header.set('east', '0')
     header.set('west', '0')
     
-    # Process each lanelet relation as a road
     road_id = 0
     processed_roads = 0
     
     for relation in relations:
-        # Find left and right boundaries
         left_way = None
         right_way = None
         
@@ -135,24 +114,13 @@ def create_opendrive_local(nodes, ways, relations, output_file):
                 right_way = member['ref']
         
         if left_way and right_way and left_way in ways and right_way in ways:
-            # Get node coordinates
             left_nodes = ways[left_way]['nodes']
             right_nodes = ways[right_way]['nodes']
             
-            # Build point lists
-            left_points = []
-            right_points = []
-            
-            for node_id in left_nodes:
-                if node_id in nodes:
-                    left_points.append(nodes[node_id])
-            
-            for node_id in right_nodes:
-                if node_id in nodes:
-                    right_points.append(nodes[node_id])
+            left_points = [nodes[nid] for nid in left_nodes if nid in nodes]
+            right_points = [nodes[nid] for nid in right_nodes if nid in nodes]
             
             if len(left_points) > 1 and len(right_points) > 1:
-                # Calculate centerline
                 centerline_points = []
                 min_len = min(len(left_points), len(right_points))
                 
@@ -162,19 +130,15 @@ def create_opendrive_local(nodes, ways, relations, output_file):
                     centerline_points.append({'x': center_x, 'y': center_y})
                 
                 if len(centerline_points) > 1:
-                    # Create road element
                     road = ET.SubElement(opendrive, 'road')
                     road.set('name', f'Road_{road_id}')
                     road.set('id', str(road_id))
                     road.set('junction', '-1')
                     
-                    # Calculate geometries
                     geometries, total_length = calculate_geometry(centerline_points)
                     road.set('length', str(total_length))
                     
-                    # Add plan view
                     plan_view = ET.SubElement(road, 'planView')
-                    
                     for geom in geometries:
                         geometry = ET.SubElement(plan_view, 'geometry')
                         geometry.set('s', str(geom['s']))
@@ -182,40 +146,29 @@ def create_opendrive_local(nodes, ways, relations, output_file):
                         geometry.set('y', str(geom['y']))
                         geometry.set('hdg', str(geom['hdg']))
                         geometry.set('length', str(geom['length']))
-                        
-                        # Add line element
-                        line = ET.SubElement(geometry, 'line')
+                        ET.SubElement(geometry, 'line')
                     
-                    # Add elevation profile (flat)
                     elevation_profile = ET.SubElement(road, 'elevationProfile')
                     elevation = ET.SubElement(elevation_profile, 'elevation')
-                    elevation.set('s', '0')
-                    elevation.set('a', '0')
-                    elevation.set('b', '0')
-                    elevation.set('c', '0')
-                    elevation.set('d', '0')
+                    for attr in ['s', 'a', 'b', 'c', 'd']:
+                        elevation.set(attr, '0')
                     
-                    # Add lanes
                     lanes = ET.SubElement(road, 'lanes')
                     lane_section = ET.SubElement(lanes, 'laneSection')
                     lane_section.set('s', '0')
                     
-                    # Center lane
                     center = ET.SubElement(lane_section, 'center')
                     lane0 = ET.SubElement(center, 'lane')
                     lane0.set('id', '0')
                     lane0.set('type', 'none')
                     
-                    # Calculate lane width
                     lane_widths = []
                     for i in range(min_len):
                         dx = left_points[i]['x'] - right_points[i]['x']
                         dy = left_points[i]['y'] - right_points[i]['y']
-                        width = sqrt(dx*dx + dy*dy)
-                        lane_widths.append(width)
+                        lane_widths.append(sqrt(dx*dx + dy*dy))
                     avg_width = np.mean(lane_widths) if lane_widths else 3.5
                     
-                    # Right lane
                     right = ET.SubElement(lane_section, 'right')
                     lane = ET.SubElement(right, 'lane')
                     lane.set('id', '-1')
@@ -229,7 +182,6 @@ def create_opendrive_local(nodes, ways, relations, output_file):
                     width.set('c', '0')
                     width.set('d', '0')
                     
-                    # Road mark
                     road_mark = ET.SubElement(lane, 'roadMark')
                     road_mark.set('sOffset', '0')
                     road_mark.set('type', 'solid')
@@ -240,43 +192,17 @@ def create_opendrive_local(nodes, ways, relations, output_file):
                     road_id += 1
                     processed_roads += 1
     
-    # Write to file
     tree = ET.ElementTree(opendrive)
     ET.indent(tree, space='  ')
     tree.write(output_file, encoding='utf-8', xml_declaration=True)
-    
     return processed_roads
 
 def main():
     input_file = "/home/taewook/Documents/Busan_Test/Assets/lanelet20902.osm"
     output_file = "/home/taewook/Documents/Busan_Test/Assets/lanelet20902.xodr"
     
-    print(f"Converting Lanelet2 to OpenDRIVE (using local coordinates)...")
-    print(f"Input: {input_file}")
-    print(f"Output: {output_file}")
-    
-    # Parse Lanelet2
     nodes, ways, relations = parse_lanelet2_local(input_file)
-    print(f"Parsed: {len(nodes)} nodes, {len(ways)} ways, {len(relations)} relations")
-    
-    # Convert to OpenDRIVE
     processed_roads = create_opendrive_local(nodes, ways, relations, output_file)
-    
-    print(f"\nConversion complete!")
-    print(f"Processed {processed_roads} roads")
-    
-    # Print coordinate ranges for reference
-    if nodes:
-        x_coords = [n['x'] for n in nodes.values()]
-        y_coords = [n['y'] for n in nodes.values()]
-        print(f"\nCoordinate ranges:")
-        print(f"X: [{min(x_coords):.2f}, {max(x_coords):.2f}]")
-        print(f"Y: [{min(y_coords):.2f}, {max(y_coords):.2f}]")
-    
-    print(f"\nTo import in RoadRunner:")
-    print(f"1. File → Import → OpenDRIVE")
-    print(f"2. Select '{output_file}'")
-    print(f"3. If prompted for projection, select 'None' or 'Cartesian'")
 
 if __name__ == "__main__":
     main()
